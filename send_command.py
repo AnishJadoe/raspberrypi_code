@@ -253,10 +253,15 @@ class TeensyPackage_in():
         unnested_checksum = unnest_tuple(checksum)
         return sum(unnested_checksum) % 256
 
+def create_payload_package():
+    return TeensyPackage_out()
+
+def create_serial_bufer(payload):
+    return Buffer(payload)
 
 class Servo():
     
-    def __init__(self, servo_id, init_angle):
+    def __init__(self, servo_id, init_angle=0):
         self.servo_id = servo_id
         self.trim_position = init_angle
         self._servo_angle = init_angle # deg * 100
@@ -276,66 +281,94 @@ class Servo():
         self._servo_angle = angle
         return
     
-    def write_servo_speed(self, speed):
-        return
+    def zero_servo(self, serial_connection):
+        payload = create_payload_package()
+        payload.arm_servos.value = 1 
+        getattr(payload,f'servo_mode_{self.servo_id}').value = 0
+        getattr(payload,f'servo_angle_{self.servo_id}').value = 0
+        buffer = create_serial_bufer(payload)
 
+        payload_out = struct.pack(struct_out, *buffer.get_data(), buffer.get_checksum())
+
+        serial_connection.write(START_BYTE)
+        serial_connection.write(payload_out)
+        serial_connection.flush()
+        sleep(0.1)
+        return
+    
+    def set_servo_position(self, serial_connection, position):
+        payload = create_payload_package()
+        payload.arm_servos.value = 1 
+        getattr(payload,f'servo_mode_{self.servo_id}').value = 0
+        getattr(payload,f'servo_angle_{self.servo_id}').value = position
+        buffer = create_serial_bufer(payload)
+
+        payload_out = struct.pack(struct_out, *buffer.get_data(), buffer.get_checksum())
+
+        serial_connection.write(START_BYTE)
+        serial_connection.write(payload_out)
+        serial_connection.flush()
+
+        print(f"Send position {position} to servo {self.servo_id}")
+        sleep(0.1)
+        return 
+    
     def _get_rotation_count(self):
         return floor(self.total_rotation / 36000)
     
 
 ser = serial.Serial(port='/dev/serial0', baudrate=150000,timeout=None, bytesize=serial.EIGHTBITS)
 sleep(1)
-START_BYTE = b'\x9a'
+START_BYTE = b'\x9A'
 struct_out = "<2b18h4B1f2B"
 struct_in = "<36h1f2B"
 payload_in_size = struct.calcsize(struct_in)
 
-initialize_servos = True
-running = True
+init_servo = True
+recieving_data = False
+running = True 
 rotation_count = 0
+
+servo_2 = Servo(servo_id=2)
+servo_3 = Servo(servo_id=1)
+servo_4 = Servo(servo_id=4)
+
 while running:
     rotation_count = min(rotation_count,32)
     if not ser.isOpen():
         ser.open()
-
     start_byte = ser.read(1)
 
     if start_byte != START_BYTE:
+        if not recieving_data:
+            print("Not recieving start bytes")
         continue
+    
+    recieving_data = True
     data = ser.read(payload_in_size)
     unpacked_data = struct.unpack(struct_in, data)
     payload_in = TeensyPackage_in(*unpacked_data)
     checksum_in = payload_in.get_checksum()
 
 
-    if checksum_in == payload_in.checksum_out.value:
-        if initialize_servos:
-            servo_4 = Servo(servo_id=4, init_angle=payload_in.servo_4_angle.value)
-            initialize_servos = False
-        else:
-            servo_4.update_servo_angle(payload_in.servo_4_angle.value)
-
-        sleep(0.01)
-    else:
+    if not checksum_in == payload_in.checksum_out.value:
         print(f"Checksum recieved {payload_in.checksum_out.value} while checksum calculated is {checksum_in}")
         sleep(0.01)
+        continue
+    
+    if init_servo:
+        servo_4.zero_servo(ser)
+        servo_3.zero_servo(ser)
+        servo_2.zero_servo(ser)
+        init_servo = False
+    else:
+        servo_4.set_servo_position(ser, rotation_count)
+        servo_3.set_servo_position(ser, rotation_count)
+        servo_2.set_servo_position(ser, rotation_count)
+        rotation_count += 1
 
-    payload_data = TeensyPackage_out()
-    payload_data.arm_servos.value = 1 
-    payload_data.servo_mode_4.value = 0
-    payload_data.servo_angle_4.value = rotation_count
-    buffer = Buffer(payload_data)
-    payload_out = struct.pack(struct_out, *buffer.get_data(), buffer.get_checksum())
-
-    ser.write(START_BYTE)
-    ser.write(payload_out)
-    ser.flush()
     ser.close()
-
-    sleep(3)
-    rotation_count += 1
-
-
+    sleep(1)
 
         
 
