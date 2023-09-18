@@ -6,6 +6,13 @@ import struct
 from time import sleep
 from math import floor
 
+START_BYTE = b'\x9A'
+struct_out = "<2b18h4B1f2B"
+struct_in = "<36h1f2B"
+payload_in_size = struct.calcsize(struct_in)
+
+MAX_SERVO_COMMAND = 7000
+MIN_SERVO_COMMAND = 100
 
 EIGHT_BIT_NUMBERS_STORAGE = 256
 
@@ -259,13 +266,38 @@ def create_payload_package():
 def create_serial_bufer(payload):
     return Buffer(payload)
 
-class Servo():
+def set_servo_positions(serial_connection: serial.Serial, positions):
+    payload = create_payload_package()
+    payload.arm_servos.value = 1 
+
+    for idx, position in enumerate(positions):
+        servo_id = idx+1
+        # Ensure that servo positions are within bounds
+        position = max(position, MIN_SERVO_COMMAND)
+        position = min(position,MAX_SERVO_COMMAND)
+        getattr(payload,f'servo_angle_{servo_id}').value = position
+
+        print(f"Setting position for servo {servo_id} to {position}")
+        
+    buffer = create_serial_bufer(payload)
+    payload_out = struct.pack(struct_out, *buffer.get_data(), buffer.get_checksum())
+
+    serial_connection.write(START_BYTE)
+    serial_connection.write(payload_out)
+    serial_connection.flush()
+    sleep(0.1)
+
+
+    return 
     
-    def __init__(self, servo_id, init_angle=0):
+class Servo():
+
+    
+    def __init__(self, servo_id, init_angle=Int16(0)):
         self.servo_id = servo_id
-        self.trim_position = init_angle
+        self.trim_position = 0
         self._servo_angle = init_angle # deg * 100
-        self.total_rotation = 0
+        
     
     @property
     def servo_angle(self):
@@ -296,52 +328,80 @@ class Servo():
         sleep(0.1)
         return
     
-    def set_servo_position(self, serial_connection, position):
-        payload = create_payload_package()
-        payload.arm_servos.value = 1 
-        getattr(payload,f'servo_mode_{self.servo_id}').value = 0
-        getattr(payload,f'servo_angle_{self.servo_id}').value = position
-        buffer = create_serial_bufer(payload)
 
-        payload_out = struct.pack(struct_out, *buffer.get_data(), buffer.get_checksum())
-
-        serial_connection.write(START_BYTE)
-        serial_connection.write(payload_out)
-        serial_connection.flush()
-
-        print(f"Send position {position} to servo {self.servo_id}")
-        sleep(0.1)
-        return 
     
     def _get_rotation_count(self):
         return floor(self.total_rotation / 36000)
     
+def set_servo_positions(serial_connection: serial.Serial, positions, servos: List[Servo]):
+    payload = create_payload_package()
+    payload.arm_servos.value = 1 
 
-ser = serial.Serial(port='/dev/serial0', baudrate=150000,timeout=None, bytesize=serial.EIGHTBITS)
-sleep(1)
-START_BYTE = b'\x9A'
-struct_out = "<2b18h4B1f2B"
-struct_in = "<36h1f2B"
-payload_in_size = struct.calcsize(struct_in)
+    for idx, position in enumerate(positions):
+        servo = servos[idx]
+        servo_id = idx+1
+        # Ensure that servo positions are within bounds
+        position = servo.servo_angle.value + position
+        setattr(payload,f'servo_angle_{servo_id}', Int16(position)) 
+        print(f"Setting position for servo {servo_id} to {position}")
+        
+    buffer = create_serial_bufer(payload)
+    payload_out = struct.pack(struct_out, *buffer.get_data(), buffer.get_checksum())
+
+    serial_connection.write(START_BYTE)
+    serial_connection.write(payload_out)
+    serial_connection.flush()
+    sleep(0.1)
+
+    return    
+
+
+def zero_servo(serial_connection):
+    payload = create_payload_package()
+    payload.arm_servos.value = 1 
+    zero_positions = [0,0,0]
+    for idx, position in enumerate(zero_positions):
+        servo_id = idx+1
+        setattr(payload,f'servo_angle_{servo_id}', Int16(position)) 
+        print(f"Setting position for servo {servo_id} to {position}")
+        
+    buffer = create_serial_bufer(payload)
+    payload_out = struct.pack(struct_out, *buffer.get_data(), buffer.get_checksum())
+
+    serial_connection.write(START_BYTE)
+    serial_connection.write(payload_out)
+    serial_connection.flush()
+    sleep(0.1)
+
+    return    
+
 
 init_servo = True
 recieving_data = False
 running = True 
-rotation_count = 0
+rotation_count = 1
 
+ser = serial.Serial(port='/dev/ttyACM0', baudrate=9600,timeout=None, bytesize=serial.EIGHTBITS)
+print("Connection Opened")
+sleep(1)
+ser.read(1)
+print("Connected")
+
+servo_1 = Servo(servo_id=1)
 servo_2 = Servo(servo_id=2)
-servo_3 = Servo(servo_id=1)
-servo_4 = Servo(servo_id=4)
-
+servo_3 = Servo(servo_id=3)
 while running:
-    rotation_count = min(rotation_count,32)
+
+    if rotation_count > 7:
+        rotation_count = 1
     if not ser.isOpen():
         ser.open()
     start_byte = ser.read(1)
 
+
     if start_byte != START_BYTE:
         if not recieving_data:
-            print("Not recieving start bytes")
+            print(f"Not recieving start bytes, recieved {start_byte}")
         continue
     
     recieving_data = True
@@ -351,22 +411,25 @@ while running:
     checksum_in = payload_in.get_checksum()
 
 
+
     if not checksum_in == payload_in.checksum_out.value:
         print(f"Checksum recieved {payload_in.checksum_out.value} while checksum calculated is {checksum_in}")
         sleep(0.01)
         continue
-    
-    if init_servo:
-        servo_4.zero_servo(ser)
-        servo_3.zero_servo(ser)
-        servo_2.zero_servo(ser)
-        init_servo = False
-    else:
-        servo_4.set_servo_position(ser, rotation_count)
-        servo_3.set_servo_position(ser, rotation_count)
-        servo_2.set_servo_position(ser, rotation_count)
-        rotation_count += 1
 
+    if init_servo:
+        servo_1 = Servo(servo_id=1, init_angle=payload_in.servo_1_angle)
+        servo_2 = Servo(servo_id=2, init_angle=payload_in.servo_2_angle)
+        servo_3 = Servo(servo_id=3, init_angle=payload_in.servo_3_angle)
+        print(f'Initialize servos at {[servo_1.servo_angle.value, servo_2.servo_angle.value,servo_3.servo_angle.value]}')
+        init_servo = False
+    
+    position = rotation_count * 100
+    set_servo_positions(ser, [position,position,position], servos=[servo_1,servo_2,servo_3])
+
+    rotation_count += 1
+    
+    print("Possition Send")
     ser.close()
     sleep(1)
 
