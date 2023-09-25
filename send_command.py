@@ -349,11 +349,11 @@ def close_gripper(serial_connection):
     sleep(0.1)
 
     return    
-
+MAX_GRIPPER_COMMAND = 6144
 def open_gripper(serial_connection):
     payload = create_payload_package()
     payload.arm_servos.value = 1 
-    positions = [6144,6144,6144]
+    positions = [MAX_GRIPPER_COMMAND,MAX_GRIPPER_COMMAND,MAX_GRIPPER_COMMAND]
     for idx, position in enumerate(positions):
         servo_id = idx+1
         setattr(payload,f'servo_angle_{servo_id}', Int16(position)) 
